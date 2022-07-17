@@ -106,7 +106,7 @@ selected="selected">Horizontal</option><option value="1">Vertical</option>
 <br>Transpose: <input type="checkbox" name="PNLT" checked="checked"><br><br>
 </div><br>Enable automatic brightness limiter: <input type="checkbox" 
 name="ABen" onchange="enABL()" id="able"><br><div id="abl">Maximum Current: 
-<input name="MA" type="number" class="l" min="250" max="65000" oninput="UI()" 
+<input name="MA" type="number" class="l" min="250" max="2000" oninput="UI()" 
 required> mA<br><div id="ampwarning" style="color:orange;display:none">
 &#9888; Your power supply provides high current.<br>
 To improve the safety of your setup,<br>please use thick cables,<br>
