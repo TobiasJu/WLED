@@ -55,6 +55,9 @@ void userSetup() {
   audioSource->initialize();
   delay(250);
 
+  if(!audioSource->isInitialized())
+    Serial.println("AS: Failed to initialize sound input driver. Please check input PIN settings.");
+
   sampling_period_us = round(1000000*(1.0/SAMPLE_RATE));
 
   // Define the FFT Task and lock it to core 0
@@ -67,7 +70,8 @@ void userSetup() {
         &FFT_Task,                        // Task handle
         0);                               // Core where the task should run
 
-  disableSoundProcessing = false; // let it run
+  if(audioSource->isInitialized())
+    disableSoundProcessing = false; // let it run
 }
 
 // This gets called every time WiFi is (re-)connected. Initialize own network interfaces here
@@ -96,18 +100,22 @@ void userLoop() {
     #endif
     disableSoundProcessing = true;
   } else {
-    #ifdef WLED_DEBUG
-    if ((disableSoundProcessing == true) && (audioSyncEnabled == 0)) {    // we just switched to "disabled"
-      DEBUG_PRINTLN("[AS userLoop] realtime mode ended - audio processing resumed.");
-      DEBUG_PRINTF( "              RealtimeMode = %d; RealtimeOverride = %d useMainSegmentOnly=%d\n", int(realtimeMode), int(realtimeOverride), int(useMainSegmentOnly));
+    if(audioSource->isInitialized()) { // only enable if sound input driver was initialized successfully
+      #ifdef WLED_DEBUG
+      if ((disableSoundProcessing == true) && (audioSyncEnabled == 0)) {    // we just switched to "enabled"
+        DEBUG_PRINTLN("[AS userLoop] realtime mode ended - audio processing resumed.");
+        DEBUG_PRINTF( "              RealtimeMode = %d; RealtimeOverride = %d useMainSegmentOnly=%d\n", int(realtimeMode), int(realtimeOverride), int(useMainSegmentOnly));
+      }
+      #endif
+      if ((disableSoundProcessing == true) && (audioSyncEnabled == 0)) lastUMRun = millis();  // just left "realtime mode" - update timekeeping
+      disableSoundProcessing = false;
     }
-    #endif
-    if ((disableSoundProcessing == true) && (audioSyncEnabled == 0)) lastUMRun = millis();  // just left "realtime mode" - update timekeeping
-    disableSoundProcessing = false;
   }
 
-  if (audioSyncEnabled & (1 << 1)) disableSoundProcessing = true;   // make sure everything is disabled IF in audio Receive mode
-  if (audioSyncEnabled & (1 << 0)) disableSoundProcessing = false;  // keep running audio IF we're in audio Transmit mode
+  if (audioSyncEnabled & (1 << 1)) 
+    disableSoundProcessing = true;   // make sure everything is disabled IF in audio Receive mode
+  if (audioSyncEnabled & (1 << 0)  && audioSource->isInitialized()) 
+    disableSoundProcessing = false;  // keep running audio IF we're in audio Transmit mode
 
   int userloopDelay = int(millis() - lastUMRun);
   if (lastUMRun == 0) userloopDelay=0; // startup - don't have valid data from last run.
@@ -121,7 +129,6 @@ void userLoop() {
     #endif
 
     unsigned long t_now = millis();
-    lastTime = t_now;
     lastUMRun = t_now;
     if (soundAgc > AGC_NUM_PRESETS) soundAgc = 0; // make sure that AGC preset is valid (to avoid array bounds violation)
 
@@ -192,13 +199,17 @@ void userLoop() {
     }
     lastMode = knownMode;
 
-#if defined(MIC_LOGGER) || defined(MIC_SAMPLING_LOG) || defined(FFT_SAMPLING_LOG)
-    EVERY_N_MILLIS(20) {
+#if defined(MIC_LOGGER) || defined(FFT_SAMPLING_LOG)
+    EVERY_N_MILLIS(25) {
       logAudio();
     }
 #endif
 
   }
+
+  // limit dynamics (experimental)
+  limitSampleDynamics();
+
   if (audioSyncEnabled & (1 << 0)) {    // Only run the transmit code IF we're in Transmit mode
     //Serial.println("Transmitting UDP Mic Packet");
 
@@ -211,6 +222,7 @@ void userLoop() {
   // Begin UDP Microphone Sync
   if (audioSyncEnabled & (1 << 1)) {    // Only run the audio listener code if we're in Receive mode
     if (millis()-lastTime > delayMs) {
+      lastTime = millis();
       if (udpSyncConnected) {
         //Serial.println("Checking for UDP Microphone Packet");
         int packetSize = fftUdp.parsePacket();
