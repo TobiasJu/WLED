@@ -15,6 +15,7 @@ var sliderControl = ""; //WLEDSR
 var selectedPal = 0; //WLEDSR Blazoncek default slider values
 var csel = 0; // selected color slot (0-2)
 var currentPreset = -1; prevPS = -1; //WLEDSR Blazoncek default slider values
+var somp = 0;//WLEDSR: stripOrMatrixPanel
 var lastUpdate = 0;
 var segCount = 0, ledCount = 0, lowestUnused = 0, maxSeg = 0, lSeg = 0;
 var pcMode = false, pcModeA = false, lastw = 0;
@@ -40,6 +41,9 @@ var hol = [
   [2023,3,9,2,"https://aircoookie.github.io/easter.png"],
   [2024,2,31,2,"https://aircoookie.github.io/easter.png"]
 ];
+
+//WLEDSR (from blaz)
+function gId(c) {return d.getElementById(c);}
 
 var cpick = new iro.ColorPicker("#picker", {
 	width: 260,
@@ -584,7 +588,7 @@ function populateInfo(i)
 	}
 
 	var vcn = "Kuuhaku";
-	if (i.ver.startsWith("0.13.")) vcn = "Toki";
+	if (i.ver.startsWith("0.13.")) vcn = "Toki-SR";
 	if (i.cn) vcn = i.cn;
 
 	cn += `v${i.ver} "${vcn}"<br><br><table class="infot">
@@ -1553,7 +1557,9 @@ function requestJson(command, rinfo = true) {
 			syncTglRecv = info.str;
 			maxSeg = info.leds.maxseg;
 			pmt = info.fs.pmt;
-
+      //WLEDSR
+      somp = info.leds.somp;
+    
       if (!command && rinfo) setTimeout(loadPresets, 99);
 
 			d.getElementById('buttonNodes').style.display = (info.ndc > 0 && window.innerWidth > 770) ? "block":"none";
@@ -1605,11 +1611,27 @@ function toggleSync() {
 }
 
 function toggleLiveview() {
+  //WLEDSR adding liveview2D support
+	if (isInfo) toggleInfo();
+	if (isNodes) toggleNodes();
+
 	isLv = !isLv;
-	d.getElementById('liveview').style.display = (isLv) ? "block":"none";
-	var url = loc ? `http://${locip}/liveview`:"/liveview";
-	d.getElementById('liveview').src = (isLv) ? url:"about:blank";
-	d.getElementById('buttonSr').className = (isLv) ? "active":"";
+
+	var lvID = "liveview";
+	if (somp != 0) { //not 1D 
+		lvID = "liveview2D"
+		if (isLv) {
+			var cn = '<iframe id="liveview2D" src="about:blank"></iframe>';
+			d.getElementById('kliveview2D').innerHTML = cn;
+		}
+
+		gId('mliveview2D').style.transform = (isLv) ? "translateY(0px)":"translateY(100%)";
+	}
+
+	gId(lvID).style.display = (isLv) ? "block":"none";
+	var url = (loc?`http://${locip}`:'') + "/" + lvID;
+	gId(lvID).src = (isLv) ? url:"about:blank";
+	gId('buttonSr').className = (isLv) ? "active":"";
 	if (!isLv && ws && ws.readyState === WebSocket.OPEN) ws.send('{"lv":false}');
 	size();
 }
@@ -1617,6 +1639,7 @@ function toggleLiveview() {
 function toggleInfo() {
   if (isNodes) toggleNodes();
   if (isCEEditor) toggleCEEditor();// WLEDSR Custom Effects
+	if (isLv) toggleLiveview();
   isInfo = !isInfo;
   if (isInfo) populateInfo(lastinfo);
   d.getElementById('info').style.transform = (isInfo) ? "translateY(0px)":"translateY(100%)";
@@ -1626,6 +1649,7 @@ function toggleInfo() {
 function toggleNodes() {
   if (isInfo) toggleInfo();
   if (isCEEditor) toggleCEEditor();// WLEDSR Custom Effects
+	if (isLv) toggleLiveview();
   isNodes = !isNodes;
   d.getElementById('nodes').style.transform = (isNodes) ? "translateY(0px)":"translateY(100%)";
   d.getElementById('buttonNodes').className = (isNodes) ? "active":"";

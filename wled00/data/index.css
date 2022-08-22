@@ -206,6 +206,19 @@ button {
 	border: 0px;
 }
 
+/* WLEDSR */
+#liveview2D {
+	height: 90%;
+	display: none;
+	width: 90%;
+	border: 0px;
+	margin: 0 auto;
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	transform: translate(-50%,-50%);
+}
+
 .tab {
 	background-color: transparent;
 	color: var(--c-d);

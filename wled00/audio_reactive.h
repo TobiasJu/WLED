@@ -51,7 +51,11 @@ static volatile bool disableSoundProcessing = false;      // if true, sound proc
 
 constexpr i2s_port_t I2S_PORT = I2S_NUM_0;
 constexpr int BLOCK_SIZE = 128;
-constexpr int SAMPLE_RATE = 10240;      // Base sample rate in Hz
+constexpr int SAMPLE_RATE = 10240;            // Base sample rate in Hz - standard.                 Physical sample time -> 50ms
+//constexpr int SAMPLE_RATE = 20480;            // Base sample rate in Hz - 20Khz is experimental.    Physical sample time -> 25ms
+//constexpr int SAMPLE_RATE = 22050;            // Base sample rate in Hz - 22Khz is a standard rate. Physical sample time -> 23ms
+
+#define FFT_MIN_CYCLE 45                      // minimum time before FFT task is repeated. Must be less than time for reading 512 samples at SAMPLE_RATE.
 
 //Use userVar0 and userVar1 (API calls &U0=,&U1=, uint16_t)
 
@@ -109,7 +113,7 @@ bool samplePeak = 0;                            // Boolean flag for peak. Respon
 bool udpSamplePeak = 0;                         // Boolean flag for peak. Set at the same tiem as samplePeak, but reset by transmitAudioData
 constexpr int delayMs = 10;                     // I don't want to sample too often and overload WLED
 static int micIn = 0.0;                         // Current sample starts with negative values and large values, which is why it's 16 bit signed
-int sample;                                     // Current sample. Must only be updated ONCE!!!
+int sampleRaw;                                  // Current sample. Must only be updated ONCE!!!
 float sampleReal = 0.0;					                // "sample" as float, to provide bits that are lost otherwise. Needed for AGC.
 static float tmpSample;                         // An interim sample variable used for calculations.
 static float sampleAdj;                         // Gain adjusted sample value
@@ -118,7 +122,7 @@ float sampleAgc = 0.0;                          // AGC sample, smoothed
 uint16_t micData;                               // Analog input for FFT
 uint16_t micDataSm;                             // Smoothed mic data, as it's a bit twitchy
 float micDataReal = 0.0;                        // future support - this one has the full 24bit MicIn data - lowest 8bit after decimal point
-long timeOfPeak = 0;
+static unsigned long timeOfPeak = 0;
 static unsigned long lastTime = 0;
 static double micLev = 0.0;                     // Used to convert returned value to have '0' as minimum. A leveller
 float multAgc = 1.0;                            // sample * multAgc = sampleAgc. Our multiplier
@@ -134,34 +138,37 @@ constexpr uint16_t samplesFFT = 512;            // Samples in an FFT batch - Thi
 unsigned int sampling_period_us;
 unsigned long microseconds;
 
-double FFT_MajorPeak = 0;
-double FFT_Magnitude = 0;
+float FFT_MajorPeak = 0;
+float FFT_Magnitude = 0;
 uint16_t mAvg = 0;
 
 // These are the input and output vectors.  Input vectors receive computed results from FFT.
-static double vReal[samplesFFT];
-static double vImag[samplesFFT];
-double fftBin[samplesFFT];
+static float vReal[samplesFFT];
+static float vImag[samplesFFT];
+static float windowWeighingFactors[samplesFFT];
+float fftBin[samplesFFT];
 
 // Try and normalize fftBin values to a max of 4096, so that 4096/16 = 256.
 // Oh, and bins 0,1,2 are no good, so we'll zero them out.
-double fftCalc[16];
+float fftCalc[16];
 int fftResult[16];                              // Our calculated result table, which we feed to the animations.
-double fftResultMax[16];                        // A table used for testing to determine how our post-processing is working.
+float fftResultMax[16];                        // A table used for testing to determine how our post-processing is working.
 float fftAvg[16];
 
+#define FFTBIN_DOWNSCALE 0.65   // scale down FFT results, so we end up at ~128 average
+
 // Table of linearNoise results to be multiplied by soundSquelch in order to reduce squelch across fftResult bins.
-int linearNoise[16] = { 34, 28, 26, 25, 20, 12, 9, 6, 4, 4, 3, 2, 2, 2, 2, 2 };
+static int linearNoise[16] = { 34, 28, 26, 25, 20, 12, 9, 6, 4, 4, 3, 2, 2, 2, 2, 2 };
 
 // Table of multiplication factors so that we can even out the frequency response.
-double fftResultPink[16] = {1.70,1.71,1.73,1.78,1.68,1.56,1.55,1.63,1.79,1.62,1.80,2.06,2.47,3.35,6.83,9.55};
+static float fftResultPink[16] = {1.70,1.71,1.73,1.78,1.68,1.56,1.55,1.63,1.79,1.62,1.80,2.06,2.47,3.35,6.83,9.55};
 
 
 struct audioSyncPacket {
   char header[6] = UDP_SYNC_HEADER;
   uint8_t myVals[32];     //  32 Bytes
   int sampleAgc;          //  04 Bytes
-  int sample;             //  04 Bytes
+  int sampleRaw;          //  04 Bytes
   float sampleAvg;        //  04 Bytes
   bool samplePeak;        //  01 Bytes
   uint8_t fftResult[16];  //  16 Bytes
@@ -181,7 +188,7 @@ bool isValidUdpSyncVersion(char header[6]) {
 
 /* get current max sample ("published" by the I2S and FFT thread) and perform some sound processing */
 void getSample() {
-  static long peakTime;
+  static unsigned long peakTime = 0;
   const int AGC_preset = (soundAgc > 0)? (soundAgc-1): 0; // make sure the _compiler_ knows this value will not change while we are inside the function
 
   #ifdef WLED_DISABLE_SOUND
@@ -211,11 +218,18 @@ void getSample() {
   sampleReal = tmpSample;
 
   sampleAdj = fmax(fmin(sampleAdj, 255), 0);           // Question: why are we limiting the value to 8 bits ???
-  sample = (int)sampleAdj;                             // ONLY update sample ONCE!!!!
+  sampleRaw = (int)sampleAdj;                             // ONLY update sample ONCE!!!!
 
   // keep "peak" sample, but decay value if current sample is below peak
   if ((sampleMax < sampleReal) && (sampleReal > 0.5)) {
       sampleMax = sampleMax + 0.5 * (sampleReal - sampleMax);          // new peak - with some filtering
+      if ((binNum < 2) && (millis() - peakTime > 80)) {              // another simple way to detect samplePeak
+        samplePeak = 1;
+        timeOfPeak = millis();
+        udpSamplePeak = 1;
+        userVar1 = samplePeak;
+        peakTime=millis();
+      }
   } else {
       if ((multAgc*sampleMax > agcZoneStop[AGC_preset]) && (soundAgc > 0))
         sampleMax = sampleMax + 0.5 * (sampleReal - sampleMax);        // over AGC Zone - get back quickly
@@ -236,7 +250,7 @@ void getSample() {
 
   if (userVar1 == 0) samplePeak = 0;
   // Poor man's beat detection by seeing if sample > Average + some value.
-  if ((fftBin[binNum] > maxVol) && (millis() > (peakTime + 100))) {                     // This goe through ALL of the 255 bins
+  if ((maxVol > 0) && (binNum > 1) && (fftBin[binNum] > maxVol) && (millis() - peakTime > 100)) {    // This goes through ALL of the 255 bins - but ignores stupid settings
   //  if (sample > (sampleAvg + maxVol) && millis() > (peakTime + 200)) {
   // Then we got a peak, else we don't. The peak has to time out on its own in order to support UDP sound sync.
     samplePeak = 1;
@@ -394,6 +408,11 @@ void limitSampleDynamics(void) {
 // Begin FFT Code //
 ////////////////////
 
+// using latest AruinoFFT lib, because it supportd float and its much faster!
+// lib_deps += https://github.com/kosme/arduinoFFT#develop @ 1.9.2
+#define FFT_SPEED_OVER_PRECISION     // enables use of reciprocals (1/x etc), and an a few other speedups
+#define FFT_SQRT_APPROXIMATION       // enables "quake3" style inverse sqrt
+//#define sqrt(x) sqrtf(x)             // little hack that reduces FFT time by 50% on ESP32 (as alternative to FFT_SQRT_APPROXIMATION)
 #include "arduinoFFT.h"
 
 void transmitAudioData() {
@@ -406,7 +425,7 @@ void transmitAudioData() {
   }
 
   transmitData.sampleAgc = sampleAgc;
-  transmitData.sample = sample;
+  transmitData.sampleRaw = sampleRaw;
   transmitData.sampleAvg = sampleAvg;
   transmitData.samplePeak = udpSamplePeak;
   udpSamplePeak = 0;                              // Reset udpSamplePeak after we've transmitted it
@@ -418,6 +437,10 @@ void transmitAudioData() {
   transmitData.FFT_Magnitude = FFT_Magnitude;
   transmitData.FFT_MajorPeak = FFT_MajorPeak;
 
+  if (sampleAvg < 1) {  // silence - noise gate closed
+    transmitData.samplePeak = false;  // don't claim "peak" where we have silence.
+  }
+
   fftUdp.beginMulticastPacket();
   fftUdp.write(reinterpret_cast<uint8_t *>(&transmitData), sizeof(transmitData));
   fftUdp.endPacket();
@@ -428,11 +451,11 @@ void transmitAudioData() {
 
 
 // Create FFT object
-static arduinoFFT FFT = arduinoFFT( vReal, vImag, samplesFFT, SAMPLE_RATE );
+static ArduinoFFT<float> FFT = ArduinoFFT<float>( vReal, vImag, samplesFFT, SAMPLE_RATE, windowWeighingFactors);
 
-double fftAdd( int from, int to) {
+float fftAdd( int from, int to) {
   int i = from;
-  double result = 0;
+  float result = 0;
   while ( i <= to) {
     result += fftBin[i++];
   }
@@ -443,15 +466,23 @@ double fftAdd( int from, int to) {
 void FFTcode( void * parameter) {
   DEBUG_PRINT("FFT running on core: "); DEBUG_PRINTLN(xPortGetCoreID());
 
+  // see https://www.freertos.org/vtaskdelayuntil.html
+  //constexpr TickType_t xFrequency = FFT_MIN_CYCLE * portTICK_PERIOD_MS;  
+  constexpr TickType_t xFrequency_2 = (FFT_MIN_CYCLE * portTICK_PERIOD_MS) / 2;
+
   for(;;) {
+    TickType_t xLastWakeTime = xTaskGetTickCount();
     delay(1);           // DO NOT DELETE THIS LINE! It is needed to give the IDLE(0) task enough time and to keep the watchdog happy.
                         // taskYIELD(), yield(), vTaskDelay() and esp_task_wdt_feed() didn't seem to work.
 
     // Only run the FFT computing code if we're not in "realime mode" or in Receive mode
     if (disableSoundProcessing || (audioSyncEnabled & (1 << 1))) {
-      delay(7);   // release CPU - delay is implemeted using vTaskDelay()
+      //delay(7);   // release CPU - delay is implemeted using vTaskDelay()
+      vTaskDelayUntil( &xLastWakeTime, xFrequency_2);        // release CPU
       continue;
     }
+    
+    vTaskDelayUntil( &xLastWakeTime, xFrequency_2);        // release CPU, and give I2S some time to fill its buffers. Might not work well with ADC analog sources.
     audioSource->getSamples(vReal, samplesFFT);
 
     // old code - Last sample in vReal is our current mic sample
@@ -460,8 +491,8 @@ void FFTcode( void * parameter) {
     // micDataSm = ((micData * 3) + micData)/4;
 
     const int halfSamplesFFT = samplesFFT / 2;   // samplesFFT divided by 2
-    double maxSample1 = 0.0;                         // max sample from first half of FFT batch
-    double maxSample2 = 0.0;                         // max sample from second half of FFT batch
+    float maxSample1 = 0.0;                         // max sample from first half of FFT batch
+    float maxSample2 = 0.0;                         // max sample from second half of FFT batch
     for (int i=0; i < samplesFFT; i++)
     {
 	    // set imaginary parts to 0
@@ -480,26 +511,22 @@ void FFTcode( void * parameter) {
     micDataSm = (uint16_t)maxSample1;
     micDataReal = maxSample1;
 
-    FFT.DCRemoval(); // let FFT lib remove DC component, so we don't need to care about this in getSamples()
-
-    //FFT.Windowing( FFT_WIN_TYP_HAMMING, FFT_FORWARD );        // Weigh data - standard Hamming window
-    //FFT.Windowing( FFT_WIN_TYP_BLACKMAN, FFT_FORWARD );       // Blackman window - better side freq rejection
-    //FFT.Windowing( FFT_WIN_TYP_BLACKMAN_HARRIS, FFT_FORWARD );// Blackman-Harris - excellent sideband rejection
-    FFT.Windowing( FFT_WIN_TYP_FLT_TOP, FFT_FORWARD );         // Flat Top Window - better amplitude accuracy
-    FFT.Compute( FFT_FORWARD );                             // Compute FFT
-    FFT.ComplexToMagnitude();                               // Compute magnitudes
-
+    FFT.dcRemoval();                                            // remove DC offset
+    //FFT.windowing(FFTWindow::Flat_top, FFTDirection::Forward);  // Weigh data using "Flat Top" window - better amplitude accuracy
+    FFT.windowing(FFTWindow::Blackman_Harris, FFTDirection::Forward);  // Weigh data using "Blackman- Harris" window - sharp peaks due to excellent sideband rejection 
+    FFT.compute(FFTDirection::Forward );                        // Compute FFT
+    FFT.complexToMagnitude();                                   // Compute magnitudes
     //
     // vReal[3 .. 255] contain useful data, each a 20Hz interval (60Hz - 5120Hz).
     // There could be interesting data at bins 0 to 2, but there are too many artifacts.
     //
 
-    FFT.MajorPeak(&FFT_MajorPeak, &FFT_Magnitude);          // let the effects know which freq was most dominant
+    FFT.majorPeak(FFT_MajorPeak, FFT_Magnitude);            // let the effects know which freq was most dominant
 
     for (int i = 0; i < samplesFFT; i++) {                     // Values for bins 0 and 1 are WAY too large. Might as well start at 3.
-      double t = 0.0;
-      t = fabs(vReal[i]);                                   // just to be sure - values in fft bins should be positive any way
-      t = t / 16.0;                                         // Reduce magnitude. Want end result to be linear and ~4096 max.
+      float t = 0.0;
+      t = fabsf(vReal[i]);                                   // just to be sure - values in fft bins should be positive any way
+      t = t / 16.0f;                                        // Reduce magnitude. Want end result to be linear and ~4096 max.
       fftBin[i] = t;
     } // for()
 
@@ -542,6 +569,7 @@ void FFTcode( void * parameter) {
 // Adjustment for frequency curves.
   for (int i=0; i < 16; i++) {
     fftCalc[i] = fftCalc[i] * fftResultPink[i];
+    //fftCalc[i] *= FFTBIN_DOWNSCALE;   // correct magnitutude to fit into [0 ... 255]
   }
 
 // Manual linear adjustment of gain using sampleGain adjustment for different input types.
@@ -549,7 +577,7 @@ void FFTcode( void * parameter) {
         if (soundAgc)
           fftCalc[i] = fftCalc[i] * multAgc;
         else
-          fftCalc[i] = fftCalc[i] * (double)sampleGain / 40.0 * inputLevel/128 + (double)fftCalc[i]/16.0; //with inputLevel adjustment
+          fftCalc[i] = fftCalc[i] * (float)sampleGain / 40.0 * inputLevel/128 + (float)fftCalc[i]/16.0; //with inputLevel adjustment
     }
 
 
@@ -560,8 +588,10 @@ void FFTcode( void * parameter) {
         fftAvg[i] = (float)fftResult[i]*.05 + (1-.05)*fftAvg[i];
     }
 
-// release second sample to volume reactive effects. 
-	// The FFT process currently takes ~20ms, so releasing a second sample now effectively doubles the "sample rate" 
+    vTaskDelayUntil( &xLastWakeTime, xFrequency_2);        // release CPU, by waiting until FFT_MIN_CYCLE is over
+
+    // release second sample to volume reactive effects. 
+	  // Releasing a second sample now effectively doubles the "sample rate" 
     micDataSm = (uint16_t)maxSample2;
     micDataReal = maxSample2;
 

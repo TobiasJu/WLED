@@ -63,6 +63,10 @@ void initServer()
     server.on("/liveview", HTTP_GET, [](AsyncWebServerRequest *request){
       request->send_P(200, "text/html", PAGE_liveviewws);
     });
+    // WLEDSR
+    server.on("/liveview2D", HTTP_GET, [](AsyncWebServerRequest *request){
+      request->send_P(200, "text/html", PAGE_liveviewws2D);
+    });
  #else
     server.on("/liveview", HTTP_GET, [](AsyncWebServerRequest *request){
       request->send_P(200, "text/html", PAGE_liveview);
@@ -204,6 +208,10 @@ void initServer()
         DEBUG_PRINTLN(F("OTA Update Start"));
         DEBUG_PRINT("OTA running on core: "); DEBUG_PRINTLN(xPortGetCoreID());
         vTaskDelete(FFT_Task);//WLEDSR: Avoid crash due to angry watchdog
+        if (udpSyncConnected) { //WLEDSR: close UDP sync connection (if open)
+          udpSyncConnected = false;
+          fftUdp.stop();
+        }
         #ifdef ESP8266
         Update.runAsync(true);
         #endif

@@ -1,8 +1,8 @@
 /*
    @title   Arduino Real Time Interpreter (ARTI)
    @file    arti_wled_plugin.h
-   @version 0.3.0
-   @date    20220112
+   @version 0.3.1
+   @date    20220818
    @author  Ewoud Wijma
    @repo    https://github.com/ewoudwijma/ARTI
  */
@@ -23,6 +23,8 @@
   #include "arti.h"
 //  #include "FX.h"
   extern float sampleAvg;
+  extern float sampleAgc;
+  extern byte soundAgc;
 #else
   #include "../arti.h"
   #include <string.h>
@@ -40,6 +42,7 @@ enum Externals
   F_leds,
   F_setPixels,
   F_hsv,
+  F_rgbw,
 
   F_setRange,
   F_fill,
@@ -136,8 +139,12 @@ float WS2812FX::arti_external_function(uint8_t function, float par1, float par2,
       case F_setPixelColor: {
         if (par2 == 0)
           setPixelColor(((uint16_t)par1)%SEGLEN, CRGB::Black);
-        else
-          setPixelColor(((uint16_t)par1)%SEGLEN, color_from_palette(((uint8_t)par2)%256, true, (paletteBlend == 1 || paletteBlend == 3), 0));
+        else {
+          if (par3 == 0)
+            setPixelColor(((uint16_t)par1)%SEGLEN, (uint32_t)par2);
+          else
+            setPixelColor(XY((uint16_t)par1, (uint16_t)par2), (uint32_t)par3);
+        }
         return floatNull;
       }
       case F_setPixels:
@@ -145,6 +152,8 @@ float WS2812FX::arti_external_function(uint8_t function, float par1, float par2,
         return floatNull;
       case F_hsv:
         return crgb_to_col(CHSV(par1, par2, par3));
+      case F_rgbw:
+        return RGBW32(par1, par2, par3, par4);
 
       case F_setRange: {
         setRange((uint16_t)par1, (uint16_t)par2, (uint32_t)par3);
@@ -219,7 +228,7 @@ float WS2812FX::arti_external_function(uint8_t function, float par1, float par2,
     switch (function)
     {
       case F_setPixelColor:
-        PRINT_ARTI("%s(%f, %f)\n", "setPixelColor", par1, par2);
+        PRINT_ARTI("%s(%f, %f, %f)\n", "setPixelColor", par1, par2, par3);
         return floatNull;
       case F_setPixels:
         PRINT_ARTI("%s\n", "setPixels(leds)");
@@ -227,6 +236,9 @@ float WS2812FX::arti_external_function(uint8_t function, float par1, float par2,
       case F_hsv:
         PRINT_ARTI("%s(%f, %f, %f)\n", "hsv", par1, par2, par3);
         return par1 + par2 + par3;
+      case F_rgbw:
+        PRINT_ARTI("%s(%f, %f, %f, %f)\n", "rgbw", par1, par2, par3, par4);
+        return par1 + par2 + par3 + par4;
 
       case F_setRange:
         return par1 + par2 + par3;
@@ -366,7 +378,7 @@ float WS2812FX::arti_get_external_variable(uint8_t variable, float par1, float p
       case F_custom3Slider:
         return SEGMENT.custom3;
       case F_sampleAvg:
-        return sampleAvg;
+        return((soundAgc) ? sampleAgc : sampleAvg);
 
       case F_hour:
         return ((float)hour(localTime));

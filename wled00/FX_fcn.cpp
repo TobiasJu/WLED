@@ -210,7 +210,7 @@ uint16_t IRAM_ATTR WS2812FX::segmentToLogical(uint16_t i) { // ewowi20210703: wi
 
   /* reverse just an individual segment */
   int16_t logicalIndex = iGroup;
-  if (IS_REVERSE && stripOrMatrixPanel == 0) { // in case of 1D
+  if (IS_REVERSE && stripOrMatrixPanel != 1) { // in case of 1D or 3D
     if (IS_MIRROR) {
       logicalIndex = (SEGMENT.length() -1) / 2 - iGroup;  // only need to index half the pixels
     } else {
@@ -308,7 +308,7 @@ void IRAM_ATTR WS2812FX::setPixelColor(uint16_t i, byte r, byte g, byte b, byte 
     }
   } else {
     if (i < customMappingSize) i = customMappingTable[i];
-    busses.setPixelColor(i, RGBW32(r, g, b, w));
+    // busses.setPixelColor(i, RGBW32(r, g, b, w));
     busses.setPixelColor(logicalToPhysical(i), RGBW32(r, g, b, w)); // ewowi20210624: logicalToPhysical: Maps logical led index to physical led index.
   }
 }
@@ -765,7 +765,8 @@ void WS2812FX::set2DSegment(uint8_t n) {
 
 //WLEDSR, for strips we need ledCountx1 dimension
 void WS2812FX::setStripOrPanelWidthAndHeight() {
-  if (stripOrMatrixPanel == 0) { //strip
+  if (stripOrMatrixPanel != 1) { //strip or 3D cube
+    Serial.println("setStripOrPanelWidthAndHeight");
     // ledCount was removed, replaced by strip.getLengthTotal()
     matrixWidth = strip.getLengthTotal();
     matrixHeight = 1;
