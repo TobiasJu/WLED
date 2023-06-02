@@ -4,7 +4,7 @@
    Main sketch, global variable declarations
    @title WLED project sketch
    @version 0.13.2-a0
-   @author Christian Schwinne
+   @author Tobias Juhre
  */
 
 // version code in format yymmddb (b = daily build)

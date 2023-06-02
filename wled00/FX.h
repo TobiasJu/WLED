@@ -1439,15 +1439,7 @@ const char JSON_mode_names[] PROGMEM = R"=====([
 "Reserved for Elementary",
 "Flow Stripe@Hue speed,Effect speed;;",
 "Wavesins@Speed,Brightness variation,Starting Color,Range of Colors,Color variation;;!",
-<<<<<<< HEAD
 " ♫ Rocktaves@;,!;!"
-=======
-" ♫ Rocktaves@;,!;!",
-" ♫ 2D Akemi@Color speed,Dance ☑;Head palette,Arms & Legs,Eyes & Mouth;Face palette",
-" ⚙️ Custom Effect@Speed,Intensity,Custom 1, Custom 2, Custom 3;!;!",
-"3D Ripples@Speed=128,Interval=128;!;!",
-"3D Sphere Move@Speed=128,Interval=128;!;!"
->>>>>>> upstream/dev
 ])=====";
 
 //WLEDSR: second part (not SR specific, but in latest SR, not in AC (Pallettes added in WLEDSR from Retro Clown->END))

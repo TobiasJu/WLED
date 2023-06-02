@@ -512,8 +512,8 @@ href="https://github.com/atuline/WLED/" target="_blank">WLED</a>
  SR version 0.13.2.1-dev<br><br><a 
 href="https://github.com/atuline/WLED/wiki/Contributors-and-credits" 
 target="_blank">Contributors, dependencies and special thanks</a><br>
-A huge thank you to everyone who helped me create WLED!<br><br>
-(c) 2016-2022 Christian Schwinne<br><i>Licensed under the <a 
+A huge thank you to everyone who helped create WLED!<br><br>
+(c) 2016-2023 Christian Schwinne & Tobias Juhre<br><i>Licensed under the <a 
 href="https://github.com/atuline/WLED/blob/master/LICENSE" target="_blank">
 MIT license</a></i><br><br>Server message: <span class="sip">Response error!
 </span><hr><div id="toast"></div><button type="button" onclick="B()">Back
