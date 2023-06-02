@@ -473,6 +473,8 @@ public:
             return;
         }
 
+       //adc1_config_width(ADC_WIDTH_BIT_12);   // ensure that ADC1 runs at 12bit resolution - should not be needed, because i2s_set_adc_mode does that anyway
+
         // Enable I2S mode of ADC
         err = i2s_set_adc_mode(ADC_UNIT_1, adc1_channel_t(channel));
         if (err != ESP_OK) {
@@ -480,6 +482,10 @@ public:
             return;
 
         }
+
+        // see example in https://github.com/espressif/arduino-esp32/blob/master/libraries/ESP32/examples/I2S/HiFreq_ADC/HiFreq_ADC.ino
+        adc1_config_channel_atten(adc1_channel_t(channel), ADC_ATTEN_DB_11);   // configure ADC input amplification
+
 #if defined(I2S_GRAB_ADC1_COMPLETELY)
         // according to docs from espressif, the ADC needs to be started explicitly
         // fingers crossed
@@ -489,7 +495,7 @@ public:
             //return;
         }
 #else
-        err = i2s_adc_disable(I2S_NUM_0);
+        //err = i2s_adc_disable(I2S_NUM_0); // seems that disable without previous enable causes a crash/bootloop on some boards
 		//err = i2s_stop(I2S_NUM_0);
         if (err != ESP_OK) {
             Serial.printf("Failed to initially disable i2s adc: %d\n", err);

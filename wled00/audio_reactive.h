@@ -60,6 +60,7 @@ constexpr int SAMPLE_RATE = 10240;            // Base sample rate in Hz - standa
 //Use userVar0 and userVar1 (API calls &U0=,&U1=, uint16_t)
 
 #define UDP_SYNC_HEADER "00001"
+#define UDP_SYNC_HEADER_V2 "00002"
 
 uint8_t maxVol = 10;                            // Reasonable value for constant volume for 'peak detector', as it won't always trigger
 uint8_t binNum = 8;                             // Used to select the bin for FFT based beat detection.
@@ -138,9 +139,8 @@ constexpr uint16_t samplesFFT = 512;            // Samples in an FFT batch - Thi
 unsigned int sampling_period_us;
 unsigned long microseconds;
 
-float FFT_MajorPeak = 0;
-float FFT_Magnitude = 0;
-uint16_t mAvg = 0;
+float FFT_MajorPeak = 1.0f;
+float FFT_Magnitude = 0.0001;
 
 // These are the input and output vectors.  Input vectors receive computed results from FFT.
 static float vReal[samplesFFT];
@@ -164,6 +164,7 @@ static int linearNoise[16] = { 34, 28, 26, 25, 20, 12, 9, 6, 4, 4, 3, 2, 2, 2, 2
 static float fftResultPink[16] = {1.70,1.71,1.73,1.78,1.68,1.56,1.55,1.63,1.79,1.62,1.80,2.06,2.47,3.35,6.83,9.55};
 
 
+// default "V1" SR 0.13.x audiosync struct - 83 Bytes
 struct audioSyncPacket {
   char header[6] = UDP_SYNC_HEADER;
   uint8_t myVals[32];     //  32 Bytes
@@ -176,6 +177,18 @@ struct audioSyncPacket {
   double FFT_MajorPeak;   //  08 Bytes
 };
 
+// new "V2" AC 0.14.0 audiosync struct - 40 Bytes
+struct audioSyncPacket_v2 {
+      char    header[6] = UDP_SYNC_HEADER_V2; // 06 bytes
+      float   sampleRaw;      //  04 Bytes  - either "sampleRaw" or "rawSampleAgc" depending on soundAgc setting
+      float   sampleSmth;     //  04 Bytes  - either "sampleAvg" or "sampleAgc" depending on soundAgc setting
+      uint8_t samplePeak;     //  01 Bytes  - 0 no peak; >=1 peak detected. In future, this will also provide peak Magnitude
+      uint8_t reserved1;      //  01 Bytes  - reserved for future extensions like loudness
+      uint8_t fftResult[16];  //  16 Bytes  - FFT results
+      float  FFT_Magnitude;   //  04 Bytes
+      float  FFT_MajorPeak;   //  04 Bytes
+};
+
 double mapf(double x, double in_min, double in_max, double out_min, double out_max);
 
 bool isValidUdpSyncVersion(char header[6]) {
@@ -186,9 +199,16 @@ bool isValidUdpSyncVersion(char header[6]) {
   }
 }
 
+bool isValidUdpSyncVersion2(char header[6]) {
+  if (strncmp(header, UDP_SYNC_HEADER_V2, 5) == 0) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
 /* get current max sample ("published" by the I2S and FFT thread) and perform some sound processing */
 void getSample() {
-  static unsigned long peakTime = 0;
   const int AGC_preset = (soundAgc > 0)? (soundAgc-1): 0; // make sure the _compiler_ knows this value will not change while we are inside the function
 
   #ifdef WLED_DISABLE_SOUND
@@ -204,9 +224,9 @@ void getSample() {
   micIn -= micLev;                                // Let's center it to 0 now
 
   // Using an exponential filter to smooth out the signal. We'll add controls for this in a future release.
-  float micInNoDC = fabs(micDataReal - micLev);
+  float micInNoDC = fabsf(micDataReal - micLev);
   expAdjF = weighting * micInNoDC + ((1.0-weighting) * expAdjF);
-  expAdjF = fabs(expAdjF);                          // Now (!) take the absolute value
+  expAdjF = fabsf(expAdjF);                          // Now (!) take the absolute value
 
   expAdjF = (expAdjF <= soundSquelch) ? 0: expAdjF; // simple noise gate
   if ((soundSquelch == 0) && (expAdjF < 0.25f)) expAdjF = 0;
@@ -223,12 +243,11 @@ void getSample() {
   // keep "peak" sample, but decay value if current sample is below peak
   if ((sampleMax < sampleReal) && (sampleReal > 0.5)) {
       sampleMax = sampleMax + 0.5 * (sampleReal - sampleMax);          // new peak - with some filtering
-      if ((binNum < 2) && (millis() - peakTime > 80)) {              // another simple way to detect samplePeak
+      if (((maxVol < 6) || (binNum < 9)) && (millis() - timeOfPeak > 80)) {              // another simple way to detect samplePeak
         samplePeak = 1;
         timeOfPeak = millis();
         udpSamplePeak = 1;
         userVar1 = samplePeak;
-        peakTime=millis();
       }
   } else {
       if ((multAgc*sampleMax > agcZoneStop[AGC_preset]) && (soundAgc > 0))
@@ -239,6 +258,7 @@ void getSample() {
   if (sampleMax < 0.5) sampleMax = 0.0;
 
   sampleAvg = ((sampleAvg * 15.0) + sampleAdj) / 16.0;   // Smooth it out over the last 16 samples.
+  sampleAvg = fabsf(sampleAvg);                          // make sure we have a positive value
 
   // Fixes private class variable compiler error. Unsure if this is the correct way of fixing the root problem. -THATDONFC
   uint16_t MinShowDelay = strip.getMinShowDelay();
@@ -250,14 +270,13 @@ void getSample() {
 
   if (userVar1 == 0) samplePeak = 0;
   // Poor man's beat detection by seeing if sample > Average + some value.
-  if ((maxVol > 0) && (binNum > 1) && (fftBin[binNum] > maxVol) && (millis() - peakTime > 100)) {    // This goes through ALL of the 255 bins - but ignores stupid settings
+  if ((maxVol > 1) && (binNum > 4) && (fftBin[binNum] > maxVol) && (millis() - timeOfPeak > 100)) {    // This goes through ALL of the 255 bins - but ignores stupid settings
   //  if (sample > (sampleAvg + maxVol) && millis() > (peakTime + 200)) {
   // Then we got a peak, else we don't. The peak has to time out on its own in order to support UDP sound sync.
     samplePeak = 1;
     timeOfPeak = millis();
     udpSamplePeak = 1;
     userVar1 = samplePeak;
-    peakTime=millis();
   }
 } // getSample()
 
@@ -295,7 +314,7 @@ void agcAvg(unsigned long the_time) {
   if (time_now - last_time > 2)  {
     last_time = time_now;
 
-    if((fabs(sampleReal) < 2.0) || (sampleMax < 1.0)) {
+    if((fabsf(sampleReal) < 2.0) || (sampleMax < 1.0)) {
       // MIC signal is "squelched" - deliver silence
       multAgcTemp = multAgc;          // keep old control value (no change)
       tmpAgc = 0;
@@ -339,7 +358,7 @@ void agcAvg(unsigned long the_time) {
 
   // NOW finally amplify the signal
   tmpAgc = sampleReal * multAgcTemp;                  // apply gain to signal
-  if(fabs(sampleReal) < 2.0) tmpAgc = 0;              // apply squelch threshold
+  if(fabsf(sampleReal) < 2.0) tmpAgc = 0;              // apply squelch threshold
   if (tmpAgc > 255) tmpAgc = 255;                     // limit to 8bit
   if (tmpAgc < 1) tmpAgc = 0;                         // just to be sure
 
@@ -349,11 +368,12 @@ void agcAvg(unsigned long the_time) {
 
 
   // update smoothed AGC sample
-  if(fabs(tmpAgc) < 1.0) 
+  if(fabsf(tmpAgc) < 1.0) 
     sampleAgc =  0.5 * tmpAgc + 0.5 * sampleAgc;      // fast path to zero
   else
     sampleAgc = sampleAgc + agcSampleSmooth[AGC_preset] * (tmpAgc - sampleAgc); // smooth path
 
+  sampleAgc = fabsf(sampleAgc);
   userVar0 = sampleAvg * 4;
   if (userVar0 > 255) userVar0 = 255;
 
@@ -448,6 +468,56 @@ void transmitAudioData() {
 } // transmitAudioData()
 
 
+static void extract_v2_packet(int packetSize, uint8_t *fftBuff)
+{
+  // extract v2 packet - assuming a valid packet, as this check was checked alreaedy done in userloop()
+    static audioSyncPacket_v2 receivedPacket;
+    memcpy(&receivedPacket, fftBuff, MIN(sizeof(receivedPacket), packetSize));  // don't copy more that what fits into audioSyncPacket
+    receivedPacket.header[5] = '\0';                                            // ensure string termination
+
+    // update samples for effects
+    float my_volumeSmth   = receivedPacket.sampleSmth;
+    float my_volumeRaw    = receivedPacket.sampleRaw;
+    if (my_volumeSmth < 0) my_volumeSmth = 0.0f;
+    if (my_volumeRaw < 0) my_volumeRaw = 0;
+    // update internal samples
+    sampleRaw    = my_volumeRaw;
+    sampleAvg    = my_volumeSmth;
+    rawSampleAgc = my_volumeRaw;
+    sampleAgc    = my_volumeSmth;
+    multAgc      = 1.0f;      
+
+    // auto-reset sample peak. Need to do it here, because getSample() is not running
+    uint16_t MinShowDelay = strip.getMinShowDelay();
+    if (millis() - timeOfPeak > MinShowDelay) {   // Auto-reset of samplePeak after a complete frame has passed.
+      samplePeak = 0;
+      udpSamplePeak = 0;
+    }
+    if (userVar1 == 0) samplePeak = 0;
+    // Only change samplePeak IF it's currently false.
+    // If it's true already, then the animation still needs to respond.
+    if (!samplePeak) {
+      samplePeak = receivedPacket.samplePeak;
+      if (samplePeak) timeOfPeak = millis();
+      udpSamplePeak = samplePeak;
+      userVar1 = samplePeak;
+    }
+    //These values are only available on the ESP32
+    for (int i = 0; i < 16; i++) fftResult[i] = receivedPacket.fftResult[i];
+    FFT_Magnitude = fabsf(receivedPacket.FFT_Magnitude);
+    FFT_MajorPeak = constrain(receivedPacket.FFT_MajorPeak, 1.0f, 5120.0f); // restrict value to range expected by effects
+
+	  // fake myVals
+    static unsigned int myvals_index = 0;
+    myVals[myvals_index] = receivedPacket.sampleRaw;
+    myvals_index = (myvals_index +1) % 32;
+    myVals[myvals_index] = receivedPacket.sampleSmth;
+    myvals_index = (myvals_index +1) % 32;
+	  myVals[random8() % 32] = receivedPacket.sampleSmth;
+	  myVals[random8() % 32] = receivedPacket.fftResult[2];
+	  myVals[random8() % 32] = receivedPacket.fftResult[7];
+	  myVals[random8() % 32] = receivedPacket.fftResult[12];
+}
 
 
 // Create FFT object
@@ -481,10 +551,15 @@ void FFTcode( void * parameter) {
       vTaskDelayUntil( &xLastWakeTime, xFrequency_2);        // release CPU
       continue;
     }
-    
-    vTaskDelayUntil( &xLastWakeTime, xFrequency_2);        // release CPU, and give I2S some time to fill its buffers. Might not work well with ADC analog sources.
+
+    #if !defined(I2S_GRAB_ADC1_COMPLETELY)    
+    if (dmType > 0)  // the "delay trick" does not help for analog, because I2S ADC is disabled outside of getSamples()
+    #endif
+      vTaskDelayUntil( &xLastWakeTime, xFrequency_2);        // release CPU, and give I2S some time to fill its buffers. Might not work well with ADC analog sources.
+
     audioSource->getSamples(vReal, samplesFFT);
 
+    xLastWakeTime = xTaskGetTickCount();       // update "last unblocked time" for vTaskDelay
     // old code - Last sample in vReal is our current mic sample
     //micDataSm = (uint16_t)vReal[samples - 1]; // will do a this a bit later
 
@@ -501,9 +576,9 @@ void FFTcode( void * parameter) {
 	    if ((vReal[i] <= (INT16_MAX - 1024)) && (vReal[i] >= (INT16_MIN + 1024)))  //skip extreme values - normally these are artefacts
 	    {
 	        if (i <= halfSamplesFFT) {
-		       if (fabs(vReal[i]) > maxSample1) maxSample1 = fabs(vReal[i]);
+		       if (fabsf(vReal[i]) > maxSample1) maxSample1 = fabsf(vReal[i]);
 	        } else {
-		       if (fabs(vReal[i]) > maxSample2) maxSample2 = fabs(vReal[i]);
+		       if (fabsf(vReal[i]) > maxSample2) maxSample2 = fabsf(vReal[i]);
 	        }
 	    }
     }
@@ -521,7 +596,9 @@ void FFTcode( void * parameter) {
     // There could be interesting data at bins 0 to 2, but there are too many artifacts.
     //
 
-    FFT.majorPeak(FFT_MajorPeak, FFT_Magnitude);            // let the effects know which freq was most dominant
+    FFT.majorPeak(FFT_MajorPeak, FFT_Magnitude);             // let the effects know which freq was most dominant
+    FFT_MajorPeak = constrain(FFT_MajorPeak, 1.0f, 5120.0f); // restrict value to range expected by effects
+    FFT_Magnitude = fabsf(FFT_Magnitude);
 
     for (int i = 0; i < samplesFFT; i++) {                     // Values for bins 0 and 1 are WAY too large. Might as well start at 3.
       float t = 0.0;
@@ -588,7 +665,10 @@ void FFTcode( void * parameter) {
         fftAvg[i] = (float)fftResult[i]*.05 + (1-.05)*fftAvg[i];
     }
 
-    vTaskDelayUntil( &xLastWakeTime, xFrequency_2);        // release CPU, by waiting until FFT_MIN_CYCLE is over
+    #if !defined(I2S_GRAB_ADC1_COMPLETELY)    
+    if (dmType > 0)  // the "delay trick" does not help for analog
+    #endif
+      vTaskDelayUntil( &xLastWakeTime, xFrequency_2);        // release CPU, by waiting until FFT_MIN_CYCLE is over
 
     // release second sample to volume reactive effects. 
 	  // Releasing a second sample now effectively doubles the "sample rate" 
